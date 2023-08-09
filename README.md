@@ -45,8 +45,9 @@ binfreeze accepts its rules as a file with line-separated paths to executables. 
 
 Here's a simple example for reference:
 
-`/etc/binfreeze/rules.allow`
 ```
+# /etc/binfreeze/rules.allow
+# oh, did I mention it supports comments?
 /usr/bin/ls
 /home/capsice/.local/bin/pw
 ```
