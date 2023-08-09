@@ -1,0 +1,5 @@
+#ifndef BF_CONFIG
+#define BF_CONFIG
+#define BF_VERSION "@VERSION@"
+#define BF_NAME "@NAME@"
+#endif

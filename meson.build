@@ -1,0 +1,44 @@
+project(
+	'binfreeze', 
+	'c', 
+	default_options: [
+		'c_std=c11',
+		'warning_level=2',
+		'werror=true',
+	],
+	version: '0.0.1'
+)
+
+project_name = meson.project_name()
+
+configure_file(
+    input: 'include/config.h.in',
+    output: 'config.h',
+    configuration: {
+			'VERSION': meson.project_version(), 
+			'NAME': project_name
+		},
+)
+
+add_global_arguments(
+	[
+		'-Wunused-result',
+		'-Wno-unused-parameter',
+		'-Wno-unused-result',
+		'-Wno-missing-braces',
+		'-Wno-format-zero-length',
+		'-Wunused-result',
+		'-Wundef',
+		'-Wvla',
+	],
+	language: 'c',
+)
+
+
+executable(
+	project_name,
+	'src/binfreeze.c',
+	include_directories: [ 
+		include_directories('include')
+	]
+)
