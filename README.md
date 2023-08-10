@@ -13,14 +13,15 @@ This may be incredibly inconvenient in systems that are constantly changing, but
 ## Usage
 
 ```
+binfreeze 0.0.1
 usage: binfreeze [options]
 options:
+        -v              verbose
         -g              generate config to stdout
+        -h              show this usage information
+        -n              do not block executables if they change
         -a <conf>       specify configuration file for programs to allow
         -b <conf>       specify configuration file for programs to block
-        -n              do not block executables if they change
-        -h              show this usage information
-        -v              show version
 ```
 
 ### Block on change
@@ -37,16 +38,21 @@ You can run binfreeze as a service with your favourite init system, but be very 
 
 ### Warning
 
-```
 If both -b and -a are used, any program that is on both the block list and the allow list will not be allowed to run, as the block list takes precedence.
+
+Also, for the love of God, if you're running an allow list only, don't forget to add `ld.so` to it. Otherwise your system will probably crash.
+
 ```
+realpath "$(which ld.so)" >> allow.conf
+```
+---
 
 binfreeze accepts its rules as a file with line-separated paths to executables. Globbing is not supported.
 
 Here's a simple example for reference:
 
 ```
-# /etc/binfreeze/rules.allow
+# /etc/binfreeze/allow.conf
 # oh, did I mention it supports comments?
 /usr/bin/ls
 /home/capsice/.local/bin/pw
@@ -55,13 +61,13 @@ Here's a simple example for reference:
 You can create a simple allow list containing all of your system executables by doing something like this:
 
 ```
-find / -type f -perm /111 | sort -u  > /etc/binfreeze/rules.allow
+find / -type f -perm /111 | sort -u  > /etc/binfreeze/allow.conf
 ```
 
 And then run binfreeze like so:
 
 ```
-binfreeze -a /etc/binfreeze/rules.allow
+binfreeze -a /etc/binfreeze/allow.conf
 ```
 
 After this you can check that if you create a new executable file of any type in the system, it won't be possible to run it, even with root permissions.

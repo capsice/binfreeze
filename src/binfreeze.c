@@ -33,8 +33,8 @@
 #include "config.h"
 
 typedef struct {
-  size_t ln_rules;
-  size_t sz_rules;
+  size_t length;
+  size_t capacity;
   bool sorted;
   char **buf;
 } rule_vec_t;
@@ -43,28 +43,34 @@ enum MODE { ALLOW, BLOCK, GENERATING };
 
 static bool block_on_change = true;
 static bool is_generating = false;
+static bool is_verbose = false;
 static char *allow_conf = NULL;
 static char *block_conf = NULL;
 
+static const char *blocked_exec_fmt =
+    "blocking execution attempt of %s by pid %d\n";
+
 static void print_usage(int exit_code) {
+
+  if (exit_code != EXIT_FAILURE) {
+    puts(BF_NAME " " BF_VERSION);
+  }
 
   char usage[] =
       "usage: %s [options]\n"
       "options:\n"
+      "\t-v              verbose\n"
       "\t-g              generate config to stdout\n"
-      "\t-a <conf>       specify configuration file for programs to allow\n"
-      "\t-b <conf>       specify configuration file for programs to block\n"
-      "\t-n              do not block executables if they change\n"
       "\t-h              show this usage information\n"
-      "\t-v              show version\n";
+      "\t-n              do not block executables if they change\n"
+      "\t-a <conf>       specify configuration file for programs to allow\n"
+      "\t-b <conf>       specify configuration file for programs to block\n";
 
-  printf(usage, BF_NAME);
+  FILE *buf = exit_code == EXIT_FAILURE ? stderr : stdout;
+
+  fprintf(buf, usage, BF_NAME);
+
   exit(exit_code);
-}
-
-static void print_version(void) {
-  printf("%s %s\n", BF_NAME, BF_VERSION);
-  exit(EXIT_SUCCESS);
 }
 
 static int cmp_rules(const void *a, const void *b) {
@@ -73,18 +79,18 @@ static int cmp_rules(const void *a, const void *b) {
 
 static int add_rule(rule_vec_t *rules, char *path) {
 
-  if (rules->ln_rules == rules->sz_rules) {
-    char **tmp = realloc(rules->buf, rules->sz_rules * 2 * sizeof(char *));
+  if (rules->length == rules->capacity) {
+    char **tmp = realloc(rules->buf, rules->capacity * 2 * sizeof(char *));
 
     if (tmp == NULL) {
       return -1;
     }
 
-    rules->sz_rules *= 2;
+    rules->capacity *= 2;
     rules->buf = tmp;
   }
 
-  for (size_t i = 0; i < rules->ln_rules; i++) {
+  for (size_t i = 0; i < rules->length; i++) {
     if (strcmp(path, rules->buf[i]) == 0) {
       return 0;
     }
@@ -95,7 +101,7 @@ static int add_rule(rule_vec_t *rules, char *path) {
     return -1;
   }
 
-  rules->buf[rules->ln_rules++] = dup;
+  rules->buf[rules->length++] = dup;
   rules->sorted = false;
 
   return 0;
@@ -146,15 +152,13 @@ static ssize_t load_rules(rule_vec_t *rules, const char *filepath) {
 
     rules_loaded++;
 
-    puts(start);
-
     if (add_rule(rules, start) == -1) {
       fclose(fptr);
       return -1;
     }
   }
 
-  qsort(rules->buf, rules->ln_rules, sizeof(char *), cmp_rules);
+  qsort(rules->buf, rules->length, sizeof(char *), cmp_rules);
   rules->sorted = true;
 
   return rules_loaded;
@@ -175,15 +179,23 @@ static rule_vec_t *init_rules(const char *filepath) {
     return NULL;
   }
 
-  rules->ln_rules = 0;
-  rules->sz_rules = 4096;
+  rules->length = 0;
+  rules->capacity = 4096;
   rules->sorted = false;
   rules->buf = rulebuf;
 
-  if (filepath != NULL && load_rules(rules, filepath) == -1) {
-    free(rules->buf);
-    free(rules);
-    return NULL;
+  if (filepath != NULL) {
+    ssize_t rules_loaded = load_rules(rules, filepath);
+    if (rules_loaded == -1) {
+      free(rules->buf);
+      free(rules);
+      return NULL;
+    }
+
+    if (is_verbose) {
+      printf("%ld rule%s loaded from %s\n", rules_loaded,
+             rules_loaded == 1 ? "" : "s", filepath);
+    }
   }
 
   return rules;
@@ -191,12 +203,12 @@ static rule_vec_t *init_rules(const char *filepath) {
 
 static char *get_rule(rule_vec_t *rules, const char *path) {
   if (!rules->sorted) {
-    qsort(rules->buf, rules->ln_rules, sizeof(char *), cmp_rules);
+    qsort(rules->buf, rules->length, sizeof(char *), cmp_rules);
     rules->sorted = true;
   }
 
   char **result =
-      bsearch(&path, rules->buf, rules->ln_rules, sizeof(char *), cmp_rules);
+      bsearch(&path, rules->buf, rules->length, sizeof(char *), cmp_rules);
 
   if (result != NULL) {
     return *result;
@@ -205,7 +217,8 @@ static char *get_rule(rule_vec_t *rules, const char *path) {
   return NULL;
 }
 
-static int add_mounts(int fan) {
+static ssize_t add_mounts(int fan) {
+  ssize_t added = 0;
   FILE *mounts = setmntent("/proc/self/mounts", "r");
 
   if (mounts == NULL) {
@@ -232,15 +245,18 @@ static int add_mounts(int fan) {
 
       if (errno != EINVAL) {
         perror("fanotify_mark");
+        added = rc;
         break;
       }
 
       rc = 0;
+    } else {
+      added++;
     }
   }
 
   endmntent(mounts);
-  return rc;
+  return added;
 }
 
 static ssize_t get_fan_ev_path(const struct fanotify_event_metadata *metadata,
@@ -323,10 +339,14 @@ static int handle_fan_ev(int fan,
   bool is_path_blocked = get_rule(rules[BLOCK], path) != NULL;
 
   if (is_path_blocked) {
-    syslog(LOG_NOTICE, "blocked execution attempt by pid %d: %s", metadata->pid,
-           path);
+    syslog(LOG_NOTICE, blocked_exec_fmt, path, metadata->pid);
+
+    if (is_verbose) {
+      printf(blocked_exec_fmt, path, metadata->pid);
+    }
 
     response.response = FAN_DENY;
+
     goto write_response;
   }
 
@@ -334,8 +354,13 @@ static int handle_fan_ev(int fan,
     bool is_path_allowed = get_rule(rules[ALLOW], path) != NULL;
 
     if (!is_path_allowed) {
-      syslog(LOG_NOTICE, "blocked execution attempt by pid %d: %s",
-             metadata->pid, path);
+
+      syslog(LOG_NOTICE, blocked_exec_fmt, path, metadata->pid);
+
+      if (is_verbose) {
+        printf(blocked_exec_fmt, path, metadata->pid);
+      }
+
       response.response = FAN_DENY;
     }
   }
@@ -354,27 +379,33 @@ static void parse_opt(int argc, char *const *argv) {
     case 'g':
       is_generating = true;
       break;
+
     case 'a':
       allow_conf = strdup(optarg);
       if (allow_conf == NULL) {
         err(EXIT_FAILURE, "strdup");
       }
       break;
+
     case 'b':
       block_conf = strdup(optarg);
       if (block_conf == NULL) {
         err(EXIT_FAILURE, "strdup");
       }
       break;
+
     case 'h':
       print_usage(EXIT_SUCCESS);
       break;
+
     case 'v':
-      print_version();
+      is_verbose = true;
       break;
+
     case 'n':
       block_on_change = false;
       break;
+
     case '?':
     default:
       print_usage(EXIT_FAILURE);
@@ -383,11 +414,12 @@ static void parse_opt(int argc, char *const *argv) {
 
   // there's nothing for us to do
   if (allow_conf == NULL && block_conf == NULL && is_generating == false) {
+    fprintf(stderr, "you must specify at least one of -[ ab / g ]\n");
     print_usage(EXIT_FAILURE);
   }
 
   if (is_generating && (allow_conf != NULL || block_conf != NULL)) {
-    fprintf(stderr, "-g flag may not be used with -a or -b.\n");
+    fprintf(stderr, "-g flag may not be used with -[ ab ]\n");
     print_usage(EXIT_FAILURE);
   }
 }
@@ -402,14 +434,20 @@ int main(int argc, char *const *argv) {
 
   if (fan == -1) {
     if (errno == EPERM) {
-      errx(EXIT_FAILURE, "you need to run this program as root.");
+      errx(EXIT_FAILURE, "you need to run this program as root");
     } else {
       err(EXIT_FAILURE, "fanotify_init");
     }
   }
 
-  if (add_mounts(fan) == -1) {
+  ssize_t mounts_added = add_mounts(fan);
+
+  if (mounts_added == -1) {
     err(EXIT_FAILURE, "add_mounts");
+  }
+
+  if (is_verbose) {
+    printf("%ld mounts added\n", mounts_added);
   }
 
   // We initialize this one regardless of block_conf being null
@@ -449,7 +487,7 @@ int main(int argc, char *const *argv) {
 
     while (FAN_EVENT_OK(metadata, rc)) {
       if (metadata->vers != FANOTIFY_METADATA_VERSION) {
-        errx(EXIT_FAILURE, "mismatch of fanotify metadata version: %d & %d.",
+        errx(EXIT_FAILURE, "mismatch of fanotify metadata version: %d & %d",
              metadata->vers, FANOTIFY_METADATA_VERSION);
       }
 
