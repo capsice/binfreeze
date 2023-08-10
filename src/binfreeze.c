@@ -20,16 +20,13 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <getopt.h>
 #include <limits.h>
 #include <mntent.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/fanotify.h>
-#include <sys/stat.h>
 #include <syslog.h>
 #include <unistd.h>
 
@@ -93,7 +90,12 @@ static int add_rule(rule_vec_t *rules, char *path) {
     }
   }
 
-  rules->buf[rules->ln_rules++] = strdup(path);
+  char *dup = strdup(path);
+  if (dup == NULL) {
+    return -1;
+  }
+
+  rules->buf[rules->ln_rules++] = dup;
   rules->sorted = false;
 
   return 0;
@@ -101,8 +103,7 @@ static int add_rule(rule_vec_t *rules, char *path) {
 
 static ssize_t load_rules(rule_vec_t *rules, const char *filepath) {
   char line[PATH_MAX];
-  ssize_t rules_loaded = 0, line_num = 0;
-  ;
+  ssize_t rules_loaded = 0;
 
   FILE *fptr = fopen(filepath, "r");
 
@@ -111,45 +112,43 @@ static ssize_t load_rules(rule_vec_t *rules, const char *filepath) {
   }
 
   while (fgets(line, PATH_MAX, fptr) != NULL) {
-    line_num++;
     size_t len = strlen(line);
+    char *end = strchr(line, '#');
+    char *start = line;
 
-    if (len == 0) {
+    if (end == start) {
       continue;
     }
 
-    // line starts with white spaces
-    if (isspace(line[0])) {
-      errx(EXIT_FAILURE,
-           "configuration error - unexpected whitespace in '%s:%ld'.", filepath,
-           line_num);
+    if (end == NULL) {
+      end = line + len;
     }
 
-    // skip comments
-    if (line[0] == '#') {
+    end -= 1;
+
+    if (len == 1 && isspace(*start)) {
       continue;
     }
 
-    // check for comments
-    char *delim = strchr(line, '#');
-
-    // if no comments, set delimiter to end of line anyway
-    if (delim == NULL) {
-      delim = line + len - 1;
-    } else {
-      delim--;
+    while (isspace(*start) && start != end) {
+      start++;
     }
 
-    // trim spaces from the end
-    while (isspace(*delim) && delim != line) {
-      delim--;
+    while (end > start && isspace(*end)) {
+      end--;
     }
 
-    *(delim + 1) = '\0';
+    if (end == start) {
+      continue;
+    }
+
+    *(end + 1) = '\0';
 
     rules_loaded++;
 
-    if (add_rule(rules, line) == -1) {
+    puts(start);
+
+    if (add_rule(rules, start) == -1) {
       fclose(fptr);
       return -1;
     }
@@ -267,16 +266,16 @@ static ssize_t get_fan_ev_path(const struct fanotify_event_metadata *metadata,
   return len;
 }
 
-static bool should_block_file(const char *path, rule_vec_t *rules[3]) {
+static bool should_block_file(const char *path, rule_vec_t *allowed_rules) {
   if (!block_on_change) {
     return false;
   }
 
-  if (rules[ALLOW] == NULL) {
+  if (allowed_rules == NULL) {
     return false;
   }
 
-  return get_rule(rules[ALLOW], path) != NULL;
+  return get_rule(allowed_rules, path) != NULL;
 }
 
 static int handle_fan_ev(int fan,
@@ -296,9 +295,10 @@ static int handle_fan_ev(int fan,
     return -1;
   }
 
+  // A file has been updated
   if (!(metadata->mask & FAN_OPEN_EXEC_PERM)) {
 
-    if (should_block_file(path, rules)) {
+    if (should_block_file(path, rules[ALLOW])) {
       add_rule(rules[BLOCK], path);
     }
 
@@ -356,9 +356,15 @@ static void parse_opt(int argc, char *const *argv) {
       break;
     case 'a':
       allow_conf = strdup(optarg);
+      if (allow_conf == NULL) {
+        err(EXIT_FAILURE, "strdup");
+      }
       break;
     case 'b':
       block_conf = strdup(optarg);
+      if (block_conf == NULL) {
+        err(EXIT_FAILURE, "strdup");
+      }
       break;
     case 'h':
       print_usage(EXIT_SUCCESS);
@@ -375,6 +381,7 @@ static void parse_opt(int argc, char *const *argv) {
     }
   }
 
+  // there's nothing for us to do
   if (allow_conf == NULL && block_conf == NULL && is_generating == false) {
     print_usage(EXIT_FAILURE);
   }
@@ -405,19 +412,19 @@ int main(int argc, char *const *argv) {
     err(EXIT_FAILURE, "add_mounts");
   }
 
-  if (is_generating) {
-    rules[GENERATING] = init_rules(NULL);
-    if (rules[GENERATING] == NULL) {
-      err(EXIT_FAILURE, "init_rules");
-    }
-  }
-
   // We initialize this one regardless of block_conf being null
   // because we will use it to block executables that have changed after the
   // program started running
   rules[BLOCK] = init_rules(block_conf);
   if (rules[BLOCK] == NULL) {
     err(EXIT_FAILURE, "init_rules");
+  }
+
+  if (is_generating) {
+    rules[GENERATING] = init_rules(NULL);
+    if (rules[GENERATING] == NULL) {
+      err(EXIT_FAILURE, "init_rules");
+    }
   }
 
   if (allow_conf != NULL) {
@@ -434,8 +441,9 @@ int main(int argc, char *const *argv) {
       err(EXIT_FAILURE, "read");
     }
 
-    if (rc == 0)
-      break;
+    if (rc == 0) {
+      errx(EXIT_FAILURE, "fanotify file descriptor was closed");
+    }
 
     metadata = buf;
 
