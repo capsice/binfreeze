@@ -10,6 +10,15 @@ Now, there are a million ways to prevent these things from happening, or at leas
 
 This may be incredibly inconvenient in systems that are constantly changing, but my intention is to allow system administrators to freeze the binaries allowed to run on their systems by taking snapshots whenever necessary, and to forbid the execution of unexpected things in production environments, thereby preventing sneaky intrusions.
 
+## Build / Install
+
+```
+meson build
+ninja -C build
+ninja -C build install
+```
+When binfreeze is installed, /etc/binfreeze/allow.conf is automatically populated with an up-to-date snapshot of all files on your system that have executable permissions.
+
 ## Usage
 
 ```

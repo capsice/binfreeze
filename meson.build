@@ -1,3 +1,5 @@
+# yes I'm using meson for this even though a makefile would have been less than half the size
+
 project(
 	'binfreeze', 
 	'c', 
@@ -34,11 +36,13 @@ add_global_arguments(
 	language: 'c',
 )
 
+meson.add_install_script('scripts/populate_config.sh')
 
 executable(
 	project_name,
 	'src/binfreeze.c',
 	include_directories: [ 
 		include_directories('include')
-	]
+	],
+	install : true
 )
