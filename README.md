@@ -93,3 +93,6 @@ Password:
 bash: ./a: Operation not permitted
 
 ```
+
+## TODO
++ Fix moved files not being detected (0.0.2)
