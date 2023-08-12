@@ -13,7 +13,7 @@ This may be incredibly inconvenient in systems that are constantly changing, but
 ## Build / Install
 
 ```
-meson build
+meson setup build
 ninja -C build
 ninja -C build install
 ```
