@@ -8,7 +8,7 @@ project(
 		'warning_level=2',
 		'werror=true',
 	],
-	version: '0.0.1'
+	version: '0.1.0'
 )
 
 project_name = meson.project_name()
@@ -40,9 +40,7 @@ meson.add_install_script('scripts/populate_config.sh')
 
 executable(
 	project_name,
-	'src/binfreeze.c',
-	include_directories: [ 
-		include_directories('include')
-	],
+	files('src/main.c', 'src/rules.c'),
+	include_directories: include_directories('include'),
 	install : true
 )
